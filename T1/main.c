@@ -1,3 +1,5 @@
+//Trabalho feito pelos alunos Guilherme Bisse, Gustavo Henrique, Felipe Matsuo, Pietro Franca e Pedro Ito
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
