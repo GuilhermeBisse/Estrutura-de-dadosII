@@ -1,4 +1,4 @@
-//Trabalho feito pelos alunos Guilherme Bisse, Gustavo Henrique, Felipe Matsuo, Pietro Franca e Pedro Ito
+//Trabalho feito pelos alunos Guilherme Bisse, Gustavo Henrique, Felipe Matsuo, Pietro Franca e Pedro Ito (Atividade da Aula 02)
 
 #include <stdio.h>
 #include <stdlib.h>
