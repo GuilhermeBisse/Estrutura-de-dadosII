@@ -2,8 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Define o tamanho máximo para strings como nomes de arquivos ou identificadores.
 #define MAX 256
 
+// Estrutura para armazenar metadados de uma imagem no arquivo de índice.
+// Contém nome, limiar de binarização, dimensões, posição no arquivo de dados e status de remoção.
 typedef struct {
     char nome[MAX];
     int limiar;
@@ -12,6 +15,7 @@ typedef struct {
     int removido;
 } Indice;
 
+// Libera a memória alocada dinamicamente para uma matriz 2D da imagem.
 void liberar_matriz(int **matriz, int altura) {
     if (matriz == NULL) return;
     for (int i = 0; i < altura; i++) {
@@ -22,6 +26,8 @@ void liberar_matriz(int **matriz, int altura) {
     free(matriz);
 }
 
+// Lê um arquivo de imagem no formato PGM de tipo P2 e retorna uma matriz 2D de inteiros.
+// Também preenche os ponteiros para largura, altura e valor máximo de pixel (maxval).
 int **lerPGM(char *arquivo, int *largura, int *altura, int *maxval) {
     FILE *f = fopen(arquivo, "r");
     if (!f) {
@@ -32,6 +38,7 @@ int **lerPGM(char *arquivo, int *largura, int *altura, int *maxval) {
     char tipo[3];
     if (fscanf(f, "%2s", tipo) != 1 || strcmp(tipo, "P2") != 0) {
         fprintf(stderr, "Tipo de arquivo PGM inválido ou não é P2.\n");
+        printf("Tipo de arquivo PGM inválido ou não é P2.\n");
         fclose(f);
         return NULL;
     }
@@ -72,6 +79,8 @@ int **lerPGM(char *arquivo, int *largura, int *altura, int *maxval) {
     return img;
 }
 
+// Salva uma matriz 2D de inteiros como um arquivo de imagem PGM (P2).
+// Assume que os valores na matriz são 0 ou 1 e os converte para 0 ou 255.
 void salvarPGM(char *arquivo, int **img, int largura, int altura) {
     FILE *f = fopen(arquivo, "w");
     if (!f) {
@@ -90,12 +99,15 @@ void salvarPGM(char *arquivo, int **img, int largura, int altura) {
     fclose(f);
 }
 
+// Aplica a binarização (limiarização) na imagem, convertendo os pixels para 1 (se > limiar) ou 0 (se <= limiar).
+// Modifica a matriz de imagem diretamente.
 void binarizar(int **img, int largura, int altura, int limiar) {
     for (int i = 0; i < altura; i++)
         for (int j = 0; j < largura; j++)
             img[i][j] = (img[i][j] > limiar) ? 1 : 0;
 }
 
+// Comprime a imagem binária usando o método visto em sala de aula: Run-Length Encoding (RLE).
 void comprimir(int **img, int largura, int altura, FILE *out) {
     int atual = img[0][0];
     long cont = 0; 
@@ -116,6 +128,8 @@ void comprimir(int **img, int largura, int altura, FILE *out) {
     fprintf(out, "%ld\n", cont); 
 }
 
+// Descomprime os dados de imagem a partir do arquivo de entrada (in) usando RLE.
+// Retorna a matriz 2D da imagem binária reconstruída (valores 0 ou 1).
 int **descomprimir(FILE *in, int largura, int altura) {
     int primeiro;
     if (fscanf(in, "%d", &primeiro) != 1) return NULL; 
@@ -156,6 +170,8 @@ int **descomprimir(FILE *in, int largura, int altura) {
     return img;
 }
 
+// Função para adicionar uma nova imagem ao banco.
+// Lê um arquivo do PGM, binariza, comprime e salva os dados em 'banco.dat' e o índice em 'banco.idx'.
 void adicionar() {
     char arquivo[MAX], nome[MAX];
     int limiar;
@@ -205,6 +221,7 @@ void adicionar() {
     printf("Imagem '%s' adicionada com sucesso!\n", nome);
 }
 
+// Lista todas as imagens registradas no arquivo de índice 'banco.idx', além do seu status de remoção.
 void listar() {
     FILE *f = fopen("banco.idx", "r");
     if (!f) { 
@@ -226,6 +243,7 @@ void listar() {
     fclose(f);
 }
 
+// Realiza a remoção lógica de um registro de imagem, marcando-o como "removido" no índice 'banco.idx'.
 void removerID() {
     int id;
     printf("Digite o ID da imagem para remover (remoção lógica): ");
@@ -271,6 +289,8 @@ void removerID() {
     }
 }
 
+// Extrai uma imagem pelo seu ID. Lê o índice, busca a posição, descomprime os dados de 'banco.dat'
+// e salva a imagem reconstruída em um novo arquivo PGM.
 void extrair() {
     int id;
     char saida[MAX];
@@ -331,6 +351,9 @@ void extrair() {
     fclose(idx);
 }
 
+// Realiza a compactação do banco de dados (remoção física).
+// Cria novos arquivos de dados, copiando apenas os registros não removidos literalmente,
+// e atualizando suas posições. Em seguida, substitui os arquivos originais pelos novos.
 void compactar() {
     FILE *idx = fopen("banco.idx", "r");
     if (!idx) { printf("Nenhum índice encontrado.\n"); return; }
@@ -400,6 +423,8 @@ void compactar() {
     printf("Compactação concluída! %d registros ativos foram mantidos.\n", total_movido);
 }
 
+// Reconstrói uma imagem média a partir de todas as versões salvas com o mesmo nome e que não foram removidas.
+// É aquela parte 'bônus' do trabalho
 void reconstruir() {
     char nome[MAX], saida[MAX];
     
