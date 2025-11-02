@@ -523,6 +523,99 @@ void reconstruir() {
     printf("Reconstrução concluída (%d versões usadas) e salva em '%s'.\n", count, saida);
 }
 
+// Função para ordenar o arquivo banco.idx usando K-Way Merge Sort externo (no arquivo 'k-merge.c').
+// Ela cria runs temporários (cada run é um arquivo, podendo conter diversos registros), ordena-os e depois os intercala em um arquivo final ordenado.
+//Essa é a função de 'pré-processamento' que prepara o arquivo de índice para ser ordenado via K-Way Merge.
+void ordenar() {
+    const char *ARQUIVO_ENTRADA = "banco.idx";
+    const char *ARQUIVO_SAIDA_TEMP = "banco.idx.tmp";
+    char nomes_runs[MAX_RUNS][MAX]; 
+    
+    FILE *fp_entrada = fopen(ARQUIVO_ENTRADA, "r");
+    if (fp_entrada == NULL) {
+        printf("Nenhum índice encontrado para ordenar (banco.idx).\n");
+        return;
+    }
+
+    
+    Indice *buffer_ram = (Indice *)malloc(RECORDS_PER_RUN * sizeof(Indice));
+    if (buffer_ram == NULL) {
+        perror("Erro de alocação de memória para o buffer");
+        fclose(fp_entrada);
+        return;
+    }
+
+    int run_count = 0;
+    size_t lidos = 0;
+    Indice reg_lido;
+
+    while (fscanf(fp_entrada, "%s %d %d %d %ld %d",
+                  reg_lido.nome, &reg_lido.limiar, &reg_lido.largura, &reg_lido.altura, &reg_lido.posicao, &reg_lido.removido) == 6) {
+
+        if (lidos < RECORDS_PER_RUN) {
+            buffer_ram[lidos++] = reg_lido;
+        } else {
+            if (run_count >= MAX_RUNS) {
+                fprintf(stderr, "Erro: Limite de runs temporários excedido (%d).\n", MAX_RUNS);
+                break;
+            }
+            
+            // Ordenar e escrever o run binário
+            qsort(buffer_ram, lidos, sizeof(Indice), comparar_indice);
+
+            sprintf(nomes_runs[run_count], "run_%d.tmp", run_count);
+            FILE *fp_saida = fopen(nomes_runs[run_count], "wb");
+            if (fp_saida == NULL) break;
+            fwrite(buffer_ram, sizeof(Indice), lidos, fp_saida);
+            fclose(fp_saida);
+
+            run_count++;
+            lidos = 0;
+            buffer_ram[lidos++] = reg_lido; // Adiciona o registro transbordado
+        }
+    }
+    
+    // Processa o último run incompleto
+    if (lidos > 0 && run_count < MAX_RUNS) {
+        qsort(buffer_ram, lidos, sizeof(Indice), comparar_indice);
+        sprintf(nomes_runs[run_count], "run_%d.tmp", run_count);
+        FILE *fp_saida = fopen(nomes_runs[run_count], "wb");
+        if (fp_saida != NULL) {
+            fwrite(buffer_ram, sizeof(Indice), lidos, fp_saida);
+            fclose(fp_saida);
+            run_count++;
+        }
+    }
+
+    free(buffer_ram);
+    fclose(fp_entrada);
+    
+    
+    if (run_count <= 0) return;
+
+    const char *runs_ptr[run_count];
+    for (int i = 0; i < run_count; i++) {
+        runs_ptr[i] = nomes_runs[i];
+    }
+    
+    int resultado = k_way_merge(runs_ptr, run_count, ARQUIVO_SAIDA_TEMP, K_MERGE);
+    
+    // 3. Finalização e Limpeza
+    for (int i = 0; i < run_count; i++) {
+        remove(nomes_runs[i]); // Remove os runs temporários
+    }
+
+    if (resultado == 0) {
+        printf("Substituindo índice antigo pelo novo ordenado.\n");
+        remove(ARQUIVO_ENTRADA);
+        rename(ARQUIVO_SAIDA_TEMP, ARQUIVO_ENTRADA);
+        printf("Ordenação do 'banco.idx' concluída com sucesso!\n");
+    } else {
+        printf("Erro durante a ordenação K-Way Merge. O arquivo de índice não foi alterado.\n");
+        remove(ARQUIVO_SAIDA_TEMP);
+    }
+}
+
 int main() {
     int opcao;
     do {
@@ -533,6 +626,7 @@ int main() {
         printf("4. Extrair imagem (Descomprimir -> PGM)\n");
         printf("5. Compactar banco (Remoção Física de Dados)\n");
         printf("6. Reconstruir imagem média (de versões por nome)\n");
+        printf("7. ORDENAR índice (Merge Sort Externo)\n");
         printf("0. Sair\n");
         printf("Escolha uma opção: ");
         
@@ -548,6 +642,7 @@ int main() {
             case 4: extrair(); break;
             case 5: compactar(); break;
             case 6: reconstruir(); break;
+            case 7: ordenar(); break;
             case 0: printf("Encerrando o gerenciador de imagens...\n"); break;
             default: printf("Opção inválida! Por favor, tente novamente.\n");
         }
