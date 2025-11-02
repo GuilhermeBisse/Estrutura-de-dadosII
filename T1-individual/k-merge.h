@@ -25,7 +25,7 @@ typedef struct {
 
 /**
  * Intercala runs binários (com Min-Heap) em um arquivo de saída de texto.
- * Assume que os arquivos de entrada jรก ESTÃO ordenados.
+ * Assume que os arquivos de entrada estão ordenados.
  * @param nomes_runs_entrada Array com os nomes dos runs (arquivos temporários) binários.
  * @param num_runs O número total de runs a serem mesclados.
  * @param nome_arquivo_saida Nome do arquivo final ordenado (banco.idx.tmp).
