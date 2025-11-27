@@ -1,19 +1,21 @@
 #include "btree.h"
 
+// Estrutura armazenada no início do arquivo para saber onde começa a raiz atual
 typedef struct {
     long raiz_offset;
 } CabecalhoArquivo;
 
+// Cache da raiz em memória para reduzir I/O (leituras de disco)
 Pagina *raiz_virtual = NULL;
 int raiz_modificada = 0;
 
 // --- Gerenciamento de Arquivo ---
 
-// Versão genérica para permitir leitura de backups (.old)
+// Permite ler páginas tanto do arquivo ativo quanto do arquivo de backup (.old) durante a reconstrução
 void ler_pagina_generica(char *arquivo, long offset, Pagina *p) {
     FILE *f = fopen(arquivo, "rb");
     if (!f) return;
-    fseek(f, offset, SEEK_SET);
+    fseek(f, offset, SEEK_SET); // Pula para a posição específica (ponteiro de arquivo)
     fread(p, sizeof(Pagina), 1, f);
     fclose(f);
 }
@@ -25,22 +27,24 @@ void ler_pagina(long offset, Pagina *p) {
 void escrever_pagina(Pagina *p) {
     FILE *f = fopen(ARQUIVO_ARVORE, "rb+");
     if (!f) f = fopen(ARQUIVO_ARVORE, "wb+");
-    fseek(f, p->meu_offset, SEEK_SET);
+    fseek(f, p->meu_offset, SEEK_SET); // Garante escrita na posição correta
     fwrite(p, sizeof(Pagina), 1, f);
     fclose(f);
 }
 
+// Alocador simples: apenas anexa a nova página no final do arquivo (EOF)
 long alocar_pagina() {
     FILE *f = fopen(ARQUIVO_ARVORE, "rb+");
     if (!f) f = fopen(ARQUIVO_ARVORE, "wb+");
     fseek(f, 0, SEEK_END);
     long offset = ftell(f);
     Pagina p_vazia = {0}; 
-    fwrite(&p_vazia, sizeof(Pagina), 1, f);
+    fwrite(&p_vazia, sizeof(Pagina), 1, f); // Reserva espaço físico
     fclose(f);
     return offset;
 }
 
+// Lê o cabeçalho para descobrir onde está a raiz (pois a raiz pode mudar/dividir)
 long ler_header_raiz(char *arquivo) {
     FILE *f = fopen(arquivo, "rb");
     if (!f) return -1;
@@ -54,13 +58,14 @@ void atualizar_header_raiz(long raiz_off) {
     FILE *f = fopen(ARQUIVO_ARVORE, "rb+");
     if (!f) f = fopen(ARQUIVO_ARVORE, "wb+");
     CabecalhoArquivo cab = { raiz_off };
-    fseek(f, 0, SEEK_SET);
+    fseek(f, 0, SEEK_SET); // Grava sempre no byte 0
     fwrite(&cab, sizeof(CabecalhoArquivo), 1, f);
     fclose(f);
 }
 
 // --- Comparação e Busca ---
 
+// Compara chave composta: Primeiro por Nome, depois por Limiar (se nomes iguais)
 int comparar(char *n1, int l1, char *n2, int l2) {
     int r = strcmp(n1, n2);
     if (r != 0) return r;
@@ -69,6 +74,7 @@ int comparar(char *n1, int l1, char *n2, int l2) {
 
 int buscar_recursivo(long offset_pag, char *nome, int limiar, Registro *retorno) {
     Pagina p;
+    // Usa cache da raiz se possível, senão lê do disco
     if (raiz_virtual && offset_pag == raiz_virtual->meu_offset) p = *raiz_virtual;
     else ler_pagina(offset_pag, &p);
 
@@ -76,12 +82,12 @@ int buscar_recursivo(long offset_pag, char *nome, int limiar, Registro *retorno)
     while (i < p.num_chaves && comparar(nome, limiar, p.chaves[i].nome, p.chaves[i].limiar) > 0) i++;
 
     if (i < p.num_chaves && comparar(nome, limiar, p.chaves[i].nome, p.chaves[i].limiar) == 0) {
-        if (p.chaves[i].removido == 1) return 0; // Ignora removidos logicamente
+        if (p.chaves[i].removido == 1) return 0; // Chave existe fisicamente, mas foi deletada logicamente
         *retorno = p.chaves[i];
         return 1;
     }
 
-    if (p.folha) return 0;
+    if (p.folha) return 0; // Chegou na folha e não achou
     return buscar_recursivo(p.filhos[i], nome, limiar, retorno);
 }
 
@@ -90,7 +96,8 @@ int buscar_chave(char *nome, int limiar, Registro *reg_retorno) {
     return buscar_recursivo(raiz_virtual->meu_offset, nome, limiar, reg_retorno);
 }
 
-// Retorna: 0 (não existe), 1 (ativo), 2 (removido)
+// Função auxiliar para Inserção: distingue "não existe" de "removido logicamente"
+// Retorna: 0 (livre), 1 (ativo), 2 (removido - pode ser reutilizado)
 int buscar_status(long offset, char *nome, int limiar, Pagina *pag_out, int *idx_out) {
     Pagina p;
     if (raiz_virtual && offset == raiz_virtual->meu_offset) p = *raiz_virtual;
@@ -110,26 +117,33 @@ int buscar_status(long offset, char *nome, int limiar, Pagina *pag_out, int *idx
 
 // --- Inserção ---
 
+
+
+// Divide um filho cheio (2*t - 1 chaves) em dois, promovendo a chave mediana
 void split_child(Pagina *x, int i) {
     long offset_y = x->filhos[i];
     Pagina y; ler_pagina(offset_y, &y);
-    Pagina z; z.meu_offset = alocar_pagina(); z.folha = y.folha;
+    Pagina z; z.meu_offset = alocar_pagina(); z.folha = y.folha; // Nova página irmã
     
-    z.num_chaves = 1;
+    z.num_chaves = 1; // Para Ordem 3, move 1 chave para Z
     z.chaves[0] = y.chaves[MAX_CHAVES - 1]; 
 
     if (!y.folha) {
+        // Se não for folha, move também os filhos
         for (int j = 0; j < 2; j++) z.filhos[j] = y.filhos[j + 2];
     }
-    y.num_chaves = 1;
+    y.num_chaves = 1; // Reduz tamanho de Y
 
+    // Abre espaço no pai (X) para o ponteiro da nova página (Z)
     for (int j = x->num_chaves; j >= i + 1; j--) x->filhos[j+1] = x->filhos[j];
     x->filhos[i+1] = z.meu_offset;
 
+    // Abre espaço no pai (X) para a chave promovida
     for (int j = x->num_chaves - 1; j >= i; j--) x->chaves[j+1] = x->chaves[j];
-    x->chaves[i] = y.chaves[1]; 
+    x->chaves[i] = y.chaves[1]; // Chave mediana sobe
     x->num_chaves++;
     
+    // Persiste alterações no disco
     escrever_pagina(&y); escrever_pagina(&z);
     if (x == raiz_virtual) raiz_modificada = 1; else escrever_pagina(x);
 }
@@ -137,6 +151,7 @@ void split_child(Pagina *x, int i) {
 void insert_non_full(Pagina *x, Registro k) {
     int i = x->num_chaves - 1;
     if (x->folha) {
+        // Inserção simples ordenada na folha
         while (i >= 0 && comparar(k.nome, k.limiar, x->chaves[i].nome, x->chaves[i].limiar) < 0) {
             x->chaves[i+1] = x->chaves[i]; i--;
         }
@@ -145,9 +160,12 @@ void insert_non_full(Pagina *x, Registro k) {
         x->num_chaves++;
         if (x == raiz_virtual) raiz_modificada = 1; else escrever_pagina(x);
     } else {
+        // Busca filho apropriado
         while (i >= 0 && comparar(k.nome, k.limiar, x->chaves[i].nome, x->chaves[i].limiar) < 0) i--;
         i++;
         Pagina filho; ler_pagina(x->filhos[i], &filho);
+        
+        // Se filho estiver cheio, divide antes de descer (Split Proativo)
         if (filho.num_chaves == MAX_CHAVES) {
             split_child(x, i);
             if (comparar(k.nome, k.limiar, x->chaves[i].nome, x->chaves[i].limiar) > 0) {
@@ -160,11 +178,13 @@ void insert_non_full(Pagina *x, Registro k) {
 
 void inserir_chave(Registro k) {
     Pagina p_ex; int idx;
+    // Checa se a chave já existe (ativa ou removida)
     int status = buscar_status(raiz_virtual->meu_offset, k.nome, k.limiar, &p_ex, &idx);
     
     if (status == 1) { printf("Erro: Chave ja existe.\n"); return; }
     if (status == 2) {
-        // Ressuscita chave removida
+        // "Ressurreição": Apenas atualiza os dados e remove a flag de deletado
+        // Evita rebalanceamento custoso da árvore
         p_ex.chaves[idx] = k;
         p_ex.chaves[idx].removido = 0;
         if (p_ex.meu_offset == raiz_virtual->meu_offset) { *raiz_virtual = p_ex; raiz_modificada = 1; }
@@ -173,6 +193,7 @@ void inserir_chave(Registro k) {
         return;
     }
 
+    // Se raiz cheia, cria nova raiz e divide a antiga
     if (raiz_virtual->num_chaves == MAX_CHAVES) {
         Pagina s; s.meu_offset = alocar_pagina(); s.folha = 0; s.num_chaves = 0;
         Pagina antiga = *raiz_virtual; antiga.meu_offset = alocar_pagina();
@@ -185,7 +206,7 @@ void inserir_chave(Registro k) {
     } else insert_non_full(raiz_virtual, k);
 }
 
-// --- Remoção Lógica ---
+// --- Remoção Lógica (Lazy Deletion) ---
 
 int remover_logico_rec(long offset, char *nome, int limiar) {
     Pagina p;
@@ -197,7 +218,8 @@ int remover_logico_rec(long offset, char *nome, int limiar) {
 
     if (i < p.num_chaves && comparar(nome, limiar, p.chaves[i].nome, p.chaves[i].limiar) == 0) {
         if (p.chaves[i].removido) return 0;
-        p.chaves[i].removido = 1; // Marca flag
+        // Apenas marca flag. O registro continua ocupando espaço no disco.
+        p.chaves[i].removido = 1; 
         if (raiz_virtual && offset == raiz_virtual->meu_offset) { *raiz_virtual = p; raiz_modificada = 1; }
         else escrever_pagina(&p);
         return 1;
@@ -221,6 +243,7 @@ void percorrer_rec(long offset) {
 
     for (int i = 0; i < p.num_chaves; i++) {
         if (!p.folha) percorrer_rec(p.filhos[i]);
+        // Filtra visualmente os removidos
         if (!p.chaves[i].removido) printf("Nome: %s | Limiar: %d\n", p.chaves[i].nome, p.chaves[i].limiar);
     }
     if (!p.folha) percorrer_rec(p.filhos[p.num_chaves]);
@@ -230,7 +253,7 @@ void percorrer_in_order() {
     if (raiz_virtual && raiz_virtual->num_chaves > 0) percorrer_rec(raiz_virtual->meu_offset);
 }
 
-// Copia dados da árvore antiga (.old) para a nova, ignorando removidos
+// Função recursiva que lê da árvore ANTIGA e insere na NOVA, ignorando o "lixo"
 void copiar_dados_rec(long offset_old, char *arq_tree_old, FILE *arq_dat_old, FILE *arq_dat_new) {
     Pagina p;
     ler_pagina_generica(arq_tree_old, offset_old, &p);
@@ -238,17 +261,22 @@ void copiar_dados_rec(long offset_old, char *arq_tree_old, FILE *arq_dat_old, FI
     for (int i = 0; i < p.num_chaves; i++) {
         if (!p.folha && p.filhos[i] != -1) copiar_dados_rec(p.filhos[i], arq_tree_old, arq_dat_old, arq_dat_new);
         
+        // Só copia se NÃO estiver removido logicamente
         if (!p.chaves[i].removido) {
+            // Copia dados brutos do arquivo .dat antigo para o novo (compactação)
             fseek(arq_dat_old, p.chaves[i].posicao_dados, SEEK_SET);
             int w, h, l;
             if (fscanf(arq_dat_old, "%d %d %d", &w, &h, &l) == 3) {
-                long nova_pos = ftell(arq_dat_new);
+                long nova_pos = ftell(arq_dat_new); // Salva nova posição
                 fprintf(arq_dat_new, "%d %d %d ", w, h, l);
-                fgetc(arq_dat_old); // Pula espaço
+                
+                // Copia restante da linha (descrição/nome)
+                fgetc(arq_dat_old); 
                 char c;
                 while((c = fgetc(arq_dat_old)) != EOF && c != '\n') fputc(c, arq_dat_new);
                 fputc('\n', arq_dat_new);
                 
+                // Insere na nova árvore com o novo offset de dados
                 Registro reg_novo = p.chaves[i];
                 reg_novo.posicao_dados = nova_pos;
                 reg_novo.removido = 0;
@@ -259,19 +287,23 @@ void copiar_dados_rec(long offset_old, char *arq_tree_old, FILE *arq_dat_old, FI
     if (!p.folha && p.filhos[p.num_chaves] != -1) copiar_dados_rec(p.filhos[p.num_chaves], arq_tree_old, arq_dat_old, arq_dat_new);
 }
 
+
+
 void reconstruir_banco_completo() {
     finalizar_arvore();
     
-    // Backup dos arquivos atuais
+    // 1. Renomeia arquivos atuais para .old (Backup temporário)
     remove("banco.btree.old"); remove("banco.dat.old");
     rename(ARQUIVO_ARVORE, "banco.btree.old");
     rename(ARQUIVO_DADOS, "banco.dat.old");
     
-    inicializar_arvore(); // Cria nova árvore zerada
+    // 2. Cria estrutura limpa
+    inicializar_arvore(); 
     
     FILE *old_dat = fopen("banco.dat.old", "rb");
     FILE *new_dat = fopen(ARQUIVO_DADOS, "wb"); 
     
+    // Rollback simples em caso de falha na abertura
     if (!old_dat || !new_dat) {
         printf("Erro na reconstrução. Restaurando...\n");
         if(old_dat) fclose(old_dat); if(new_dat) fclose(new_dat);
@@ -280,20 +312,23 @@ void reconstruir_banco_completo() {
         inicializar_arvore(); return;
     }
 
+    // 3. Lê árvore antiga e popula a nova (excluindo fisicamente os removidos)
     long raiz_old = ler_header_raiz("banco.btree.old");
     if (raiz_old != -1) copiar_dados_rec(raiz_old, "banco.btree.old", old_dat, new_dat);
     
     fclose(old_dat); fclose(new_dat);
-    // remove("banco.btree.old"); remove("banco.dat.old"); // Descomente para apagar backups
+    // remove("banco.btree.old"); // Opcional: deletar backup após sucesso
     printf("Reconstrução concluída.\n");
 }
 
 void inicializar_arvore() {
     long raiz_off = ler_header_raiz(ARQUIVO_ARVORE);
     raiz_virtual = (Pagina *)malloc(sizeof(Pagina));
+    
+    // Se arquivo vazio/novo, cria raiz inicial
     if (raiz_off == -1) {
         raiz_virtual->num_chaves = 0; raiz_virtual->folha = 1;
-        raiz_virtual->meu_offset = sizeof(CabecalhoArquivo);
+        raiz_virtual->meu_offset = sizeof(CabecalhoArquivo); // Primeira página logo após cabeçalho
         for(int i=0; i<ORDEM; i++) raiz_virtual->filhos[i] = -1;
         atualizar_header_raiz(raiz_virtual->meu_offset);
     } else ler_pagina(raiz_off, raiz_virtual);
@@ -301,5 +336,6 @@ void inicializar_arvore() {
 }
 
 void finalizar_arvore() {
+    // Flush do cache da raiz para o disco antes de sair
     if (raiz_virtual) { escrever_pagina(raiz_virtual); free(raiz_virtual); raiz_virtual = NULL; }
 }
